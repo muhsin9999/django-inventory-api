@@ -2,7 +2,7 @@ import json
 
 from django.test import TestCase
 
-from .models import Product, StockMovement
+from .models import Product, Sale, StockMovement
 
 
 class InventoryTests(TestCase):
@@ -44,3 +44,40 @@ class InventoryTests(TestCase):
         self.assertEqual(response.status_code, 409)
         product.refresh_from_db()
         self.assertEqual(product.quantity, 5)
+
+    def test_sale_updates_multiple_products_and_replay_does_not_repeat(self):
+        mug = Product.objects.create(sku='MUG-1', name='Mug', quantity=8)
+        bag = Product.objects.create(sku='BAG-1', name='Bag', quantity=4)
+        payload = {'reference': 'order-101', 'lines': [{'product_id': mug.id, 'quantity': 2}, {'product_id': bag.id, 'quantity': 1}]}
+        self.assertEqual(self.post_json('/api/sales/', payload).status_code, 201)
+        replay = self.post_json('/api/sales/', payload)
+        self.assertEqual(replay.status_code, 200)
+        self.assertTrue(replay.json()['replayed'])
+        mug.refresh_from_db()
+        bag.refresh_from_db()
+        self.assertEqual((mug.quantity, bag.quantity), (6, 3))
+        self.assertEqual((Sale.objects.count(), StockMovement.objects.count()), (1, 2))
+
+    def test_sale_rejects_short_stock_without_partial_updates(self):
+        mug = Product.objects.create(sku='MUG-1', name='Mug', quantity=8)
+        bag = Product.objects.create(sku='BAG-1', name='Bag', quantity=0)
+        payload = {'reference': 'order-102', 'lines': [{'product_id': mug.id, 'quantity': 2}, {'product_id': bag.id, 'quantity': 1}]}
+        self.assertEqual(self.post_json('/api/sales/', payload).status_code, 409)
+        mug.refresh_from_db()
+        self.assertEqual(mug.quantity, 8)
+        self.assertEqual(Sale.objects.count(), 0)
+
+    def test_sale_reference_conflict(self):
+        product = Product.objects.create(sku='MUG-1', name='Mug', quantity=8)
+        first = {'reference': 'order-103', 'lines': [{'product_id': product.id, 'quantity': 2}]}
+        changed = {'reference': 'order-103', 'lines': [{'product_id': product.id, 'quantity': 3}]}
+        self.assertEqual(self.post_json('/api/sales/', first).status_code, 201)
+        self.assertEqual(self.post_json('/api/sales/', changed).status_code, 409)
+        product.refresh_from_db()
+        self.assertEqual(product.quantity, 6)
+
+    def test_low_stock_report(self):
+        Product.objects.create(sku='MUG-1', name='Mug', quantity=2, reorder_level=3)
+        Product.objects.create(sku='BAG-1', name='Bag', quantity=5, reorder_level=3)
+        products = self.client.get('/api/products/low-stock/').json()['products']
+        self.assertEqual([item['sku'] for item in products], ['MUG-1'])

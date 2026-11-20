@@ -4,4 +4,6 @@ from inventory import views
 urlpatterns = [
     path('api/products/', views.products),
     path('api/products/<int:product_id>/movements/', views.movements),
+    path('api/products/low-stock/', views.low_stock),
+    path('api/sales/', views.sales),
 ]
